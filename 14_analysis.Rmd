@@ -1,0 +1,382 @@
+---
+title: "Analysis of NMO party representation"
+author: "Zoe MacLean"
+date: '2023'
+output:
+  word_document: default
+---
+Code in this analysis was based on tutorial material made available by Dr Martin Schweinberger of the University of Queensland, available on the LADAL website.
+
+Schweinberger, M. (2022, September 14). Fixed- and Mixed-Effects Regression Models in R. The University of Queensland. https://slcladal.github.io/regression.html
+
+**Preparation and session set up**
+
+
+```{r}
+# load packages
+library(ggplot2)
+library(gridExtra)
+library(glmulti)
+library(lme4)
+library(rms)
+library(sjPlot)
+library(here)
+library(dplyr)
+library(car)
+library(mclogit)
+library(broom)
+library(tidyverse)
+library(car)
+library(emmeans)
+```
+
+
+Set options
+
+```{r}
+# set options
+options("scipen" = 100, "digits" = 12) # suppress math annotation
+```
+
+# Valence Analysis
+
+Load the data
+
+```{r}
+data <- read.delim(here::here("data", "text_valence.csv"), sep = ",", header = T)
+```
+Factorise the relevant character based variables. Do this one variable at a time to avoid postid. 
+
+```{r}
+# This factorises the organisation column (6 levels)
+data$ownership <- as.factor(data$ownership)
+
+# This factorises the title column (297 levels)
+data$nmo_title <- as.factor(data$nmo_title)
+
+# This factorises the party mention column (3 levels)
+data$party_mentioned <- as.factor(data$party_mentioned)
+
+
+```
+
+Inspect the data
+
+```{r}
+summary(data)
+```
+
+```{r}
+num_unique_postid <- length(unique(data$postid))
+cat("Number of unique values in 'postid':", num_unique_postid)
+```
+There are 10,436 mentions in 8,723 unique facebook posts. Each post can mention one or more political parties, hence we have more mentions than posts in the dataset.
+
+Create a two-way ANOVA model
+
+```{r}
+model <- aov(valence ~ ownership * party_mentioned, data = data)
+```
+
+Check the model's assumptions with diagnostic plots:
+
+```{r}
+# Open a PDF file for plotting
+pdf(file = "diagnostic_plots.pdf", width = 14, height = 10)
+
+# Set up a 2x2 grid for plotting
+par(mfrow = c(2, 2))
+
+# Residuals vs. Fitted values
+plot(model, 1)
+
+# Normal Q-Q plot
+plot(model, 2)
+
+# Scale-Location plot
+plot(model, 3)
+
+# Cook's distance plot
+plot(model, 4)
+
+# Close the PDF file
+dev.off()
+
+# Residuals vs. Fitted values
+plot(model, 1)
+
+# Normal Q-Q plot
+plot(model, 2)
+
+# Scale-Location plot
+plot(model, 3)
+
+# Cook's distance plot
+plot(model, 4)
+
+```
+
+Check for homoscedasticity using the Levene's Test:
+
+```{r}
+leveneTest(valence ~ ownership * party_mentioned, data = data)
+```
+
+Create a histogram of the residuals:
+
+```{r}
+hist(resid(model), main = "", xlab = "Residuals")
+
+# Open a PDF file for plotting
+pdf(file = "histogram_resid.pdf", width = 10, height = 5)
+
+# Plot the histogram
+hist(resid(model), main = "", xlab = "Residuals")
+
+# Close the PDF file
+dev.off()
+
+```
+
+Create a histogram of the valence scores
+
+```{r}
+# Use a histogram to check the distribution of valence scored
+hist(data$valence, main = "", xlab = "Valence")
+
+# Open a PDF file for plotting
+pdf(file = "histogram_val.pdf", width = 10, height = 5)
+
+# Plot the histogram
+hist(data$valence, main = "", xlab = "Valence")
+
+# Close the PDF file
+dev.off()
+
+```
+
+
+Run the Kruskal-Wallis test:
+
+```{r}
+data$group <- interaction(data$ownership, data$party_mentioned)
+kruskal.test(valence ~ group, data = data)
+```
+Run the two-way ANOVA:
+
+```{r}
+anova_results <- anova(model)
+print(anova_results)
+
+```
+
+Visualise the difference in valence scores:
+
+```{r}
+# Hex codes based on the colours of the party logos
+party_colors <- c("alp" = "#d34547", "gre" = "#3b874a", "coa" = "#2a4e96") 
+
+valence_scores<- ggplot(data, aes(x = ownership, y = valence, fill = party_mentioned)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "",
+       x = "Organisation",
+       y = "Valence Score",
+       fill = "Political Party") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_fill_manual(values = party_colors,
+                    labels = c("Labor", "The Coalition","The Greens"))
+
+ggsave(filename = "valence_scores.pdf", plot = valence_scores, device = "pdf", width = 8, height = 5, dpi = 600)
+
+valence_scores 
+```
+
+
+
+Now use a mixed effects multinomial logistic regression model.
+
+```{r}
+mixed_model <- mblogit(ownership ~ party_mentioned + valence, random = ~ 1 | nmo_title, data = data)
+```
+
+
+```{r}
+summary(mixed_model)
+```
+
+Validate the use of random effects by creating a fixed-effects version of the model and then compare AIC and BIC scores.
+
+```{r}
+fixed_model <- mblogit(ownership ~ party_mentioned + valence, data = data)
+```
+
+```{r}
+AIC_fixed <- AIC(fixed_model)
+BIC_fixed <- BIC(fixed_model)
+
+AIC_mixed <- AIC(mixed_model)
+BIC_mixed <- BIC(mixed_model)
+
+cat("AIC Fixed:", AIC_fixed, "\n")
+cat("AIC Mixed:", AIC_mixed, "\n")
+cat("BIC Fixed:", BIC_fixed, "\n")
+cat("BIC Mixed:", BIC_mixed, "\n")
+```
+Use the `emmeans` package to perform pairwise comparisons of estimated marginal means. 
+
+```{r}
+emm_model <- emmeans(mixed_model, ~ ownership | party_mentioned, type = "response")
+pairs(emm_model, adjust = "tukey")
+```
+Summary of the mixed-effects model:
+
+```{r}
+mclogit::getSummary.mmblogit(mixed_model)
+```
+
+Check the VIFs to see if the model does not violate multicollinearity assumptions.
+
+```{r}
+car::vif(mixed_model) 
+```
+
+# Image Analysis
+
+Load the data
+
+```{r}
+data_img <- read.delim(here::here("data", "emotions_faces.csv"), sep = ",", header = T)
+```
+Factorise the relevant character based variables.
+
+```{r}
+# This factorises the organisation column (6 levels)
+data_img$ownership <- as.factor(data_img$ownership)
+
+# This factorises the title column (297 levels)
+data_img$nmo_title <- as.factor(data_img$nmo_title)
+
+# This factorises the party mention column (3 levels)
+data_img$party_mentioned <- as.factor(data_img$party_mentioned)
+
+# and this factorises the type of mention (2 levels)
+data_img$dominant_emotion <- as.factor(data_img$dominant_emotion)
+```
+
+Inspect the data
+
+```{r}
+summary(data_img)
+```
+
+```{r}
+num_unique_postid <- length(unique(data_img$postid))
+cat("Number of unique values in 'postid':", num_unique_postid)
+```
+
+5,131 mentions in 4,236 unique posts.
+
+```{r}
+# Save plot to a variable
+probability_own <- ggplot(data_img, aes(ownership, happy_bin, color = party_mentioned)) +
+  stat_summary(fun = mean, geom = "point", position = position_dodge(0.2)) +
+  stat_summary(fun.data = mean_cl_boot, geom = "errorbar", width = 0.2, position = position_dodge(0.2)) +
+  theme_set(theme_bw(base_size = 10)) +
+  theme(legend.position = "right") +  # Change legend position to right
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+  labs(
+    title = "",
+    x = "Ownership",
+    y = "Observed Probability of Happy",
+    color = "Political Party"
+  ) +
+  scale_color_manual(
+    values = c("#d34547", "#2a4e96", "#3b874a"),
+    labels = c("Labor", "The Coalition", "The Greens")
+  )
+
+# Save plot to PDF
+ggsave(filename = "probability_own.pdf", plot = probability_own, width = 8, height = 5, dpi = 600)
+
+probability_own
+
+```
+
+
+First, cut the data down to only emotions over the 0.80 threshold no matter the type of emotion
+```{r}
+# Subset the data to exclude any emotion scores below .80 and remove entries with NA for emotion scores
+data_80img <- subset(data_img, emotion_score >= 0.80)
+```
+Inspect the data
+```{r}
+summary(data_80img)
+```
+Lets create a model that uses dominant_emotion, party_mentioned to predict ownership with nmo_title as a random intercept.
+```{r}
+mixed_model_img <- mblogit(ownership ~ party_mentioned + dominant_emotion, random = ~ 1 | nmo_title, data = data_80img)
+```
+The model does not converge.
+
+Lets scrap this and try again with the happy_binary data.
+
+Fit the mixed-effects multinomial logistic regression model:
+```{r}
+mixed_model_img <- mblogit(ownership ~ party_mentioned + happy_bin, random = ~ 1 | nmo_title, data = data_img)
+summary(mixed_model_img)
+```
+
+Again, compare to the fixed-effects model for AIC and BIC scores.
+
+```{r}
+fixed_model_img <- mblogit(ownership ~ party_mentioned + dominant_emotion, data = data_img)
+```
+
+```{r}
+AIC_fixed_img <- AIC(fixed_model_img)
+BIC_fixed_img <- BIC(fixed_model_img)
+AIC_mixed_img <- AIC(mixed_model_img)
+BIC_mixed_img <- BIC(mixed_model_img)
+
+cat("AIC Fixed:", AIC_fixed_img, "\n")
+cat("AIC Mixed:", AIC_mixed_img, "\n")
+cat("BIC Fixed:", BIC_fixed_img, "\n")
+cat("BIC Mixed:", BIC_mixed_img, "\n")
+```
+```{r}
+# Reorder the organisations so they appear nicely in the below graph
+facet_order <- c("7 West Media", "Independent", "Australian Public Broadcaster", "Australian Community Media", "News Corp", "Nine Entertainment")
+data_img$ownership <- factor(data_img$ownership, levels = facet_order)
+
+# Combine party_mentioned and happy_bin into a single factor
+data_img$party_happy <- interaction(data_img$party_mentioned, data_img$happy_bin, sep = "_")
+
+# Create a custom order for the party_happy factor
+custom_order <- c("alp_0", "alp_1", "coa_0", "coa_1")
+data_img$party_happy <- factor(data_img$party_happy, levels = custom_order)
+
+# Create the bar chart
+bar_chart <- ggplot(data_img, aes(x = ownership, fill = party_happy)) +
+  geom_bar(position = "dodge") +
+  labs(x = "Ownership", y = "Count", fill = "Combination of \nPolitical Party\n and Happy Binary") +
+  theme_minimal() +
+  facet_wrap(~ ownership, scales = "free_x", strip.position = "bottom") +
+  scale_fill_manual(values = c("alp_0" = "#d34547", "alp_1" = "#ff8b8f", "coa_0" = "#2a4e96", "coa_1" = "#92a6ce"),
+                    labels = c("Labor + non-happy", "Labor + happy", "The Coalition + non-happy", "The Coalition + happy")) +
+  theme(strip.text.x = element_blank())  # Add this line to remove x-axis labels on individual facets
+
+# Print the bar chart
+bar_chart
+
+ggsave(filename = "happy_dist.pdf", plot = bar_chart, device = "pdf", width = 8, height = 5, dpi = 600)
+```
+ 
+```{r}
+sessionInfo()
+```
+
+
+
+
+
